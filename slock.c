@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/types.h>
 #include <X11/keysym.h>
 #include <X11/Xlib.h>
@@ -59,6 +60,13 @@ dontkillme(void) {
 }
 #endif
 
+static void inline
+log_event(FILE *logfile, char *event) {
+	time_t rawtime = NULL;
+	rawtime = time(NULL);
+	fprintf(logfile, "%s: %s", event, ctime(&rawtime));
+}
+
 #ifndef HAVE_BSD_AUTH
 static const char *
 getpw(void) { /* only run as root */
@@ -95,9 +103,9 @@ getpw(void) { /* only run as root */
 
 static void
 #ifdef HAVE_BSD_AUTH
-readpw(Display *dpy)
+readpw(Display *dpy, FILE *logfile)
 #else
-readpw(Display *dpy, const char *pws)
+readpw(Display *dpy, const char *pws, FILE *logfile)
 #endif
 {
 	char buf[32], passwd[256];
@@ -135,8 +143,10 @@ readpw(Display *dpy, const char *pws)
 #else
 				running = !!strcmp(crypt(passwd, pws), pws);
 #endif
-				if(running)
+				if(running) {
 					XBell(dpy, 100);
+					log_event(logfile, "Failed unlock event");
+				}
 				len = 0;
 				break;
 			case XK_Escape:
@@ -257,6 +267,8 @@ main(int argc, char **argv) {
 #endif
 	Display *dpy;
 	int screen;
+	FILE *logfile;
+	char logfile_path[1024];
 
 	if((argc == 2) && !strcmp("-v", argv[1]))
 		die("slock-%s, © 2006-2012 Anselm R Garbe\n", VERSION);
@@ -269,6 +281,12 @@ main(int argc, char **argv) {
 
 	if(!getpwuid(getuid()))
 		die("slock: no passwd entry for you\n");
+
+	/* Initialize logfile, log lock event */
+	if (snprintf(logfile_path, sizeof logfile_path, "%s/%s", getenv("HOME"), ".slock.log")
+			>= sizeof logfile_path)
+			die("slock: log file path too long\n");
+	logfile = fopen(logfile_path, "a+");
 
 #ifndef HAVE_BSD_AUTH
 	pws = getpw();
@@ -294,17 +312,19 @@ main(int argc, char **argv) {
 		XCloseDisplay(dpy);
 		return 1;
 	}
+	log_event(logfile, "Locked");
 
 	/* Everything is now blank. Now wait for the correct password. */
 #ifdef HAVE_BSD_AUTH
-	readpw(dpy);
+	readpw(dpy, logfile);
 #else
-	readpw(dpy, pws);
+	readpw(dpy, pws, logfile);
 #endif
 
 	/* Password ok, unlock everything and quit. */
 	for(screen = 0; screen < nscreens; screen++)
 		unlockscreen(dpy, locks[screen]);
+	log_event(logfile, "Unlocked");
 
 	free(locks);
 	XCloseDisplay(dpy);
